@@ -205,24 +205,25 @@ async def get_signals_history(limit, offset):
 
 
 # --- trend ------------------------------------------------------------------
-async def upsert_trend(symbol, strategy, trend) -> None:
-    """Set the user's manual trend (ON CONFLICT symbol+strategy)."""
+async def upsert_trend(symbol, strategy, trend, rr=None) -> None:
+    """Set the user's manual trend + optional R:R (ON CONFLICT symbol+strategy)."""
+    rr_val = _num(rr) if rr is not None else _num(2.5)
     await get_pool().execute(
         """
-        INSERT INTO trend (symbol, strategy, trend, updated_at)
-        VALUES ($1, $2, $3, now())
+        INSERT INTO trend (symbol, strategy, trend, rr, updated_at)
+        VALUES ($1, $2, $3, $4, now())
         ON CONFLICT (symbol, strategy)
-        DO UPDATE SET trend = EXCLUDED.trend, updated_at = now()
+        DO UPDATE SET trend = EXCLUDED.trend, rr = EXCLUDED.rr, updated_at = now()
         """,
-        symbol, strategy, trend,
+        symbol, strategy, trend, rr_val,
     )
 
 
 async def get_trend(symbol, strategy):
     """Read the user's manual trend row (Runner bundles it into context).
-    Returns the row (with .trend) or None."""
+    Returns the row (with .trend and .rr) or None."""
     return await get_pool().fetchrow(
-        "SELECT symbol, strategy, trend, updated_at "
+        "SELECT symbol, strategy, trend, rr, updated_at "
         "FROM trend WHERE symbol = $1 AND strategy = $2",
         symbol, strategy,
     )
@@ -238,6 +239,37 @@ async def get_last_alert(strategy, symbol):
     )
 
 
+# --- strategy_config (on/off switch) ----------------------------------------
+async def get_strategy_enabled(strategy: str) -> bool:
+    """Return True if the strategy is enabled. Defaults to True when no row exists."""
+    row = await get_pool().fetchrow(
+        "SELECT enabled FROM strategy_config WHERE strategy = $1", strategy
+    )
+    return bool(row["enabled"]) if row else True
+
+
+async def set_strategy_enabled(strategy: str, enabled: bool) -> None:
+    """Upsert the enabled flag for a strategy."""
+    await get_pool().execute(
+        """
+        INSERT INTO strategy_config (strategy, enabled, updated_at)
+        VALUES ($1, $2, now())
+        ON CONFLICT (strategy) DO UPDATE SET
+            enabled    = EXCLUDED.enabled,
+            updated_at = now()
+        """,
+        strategy, enabled,
+    )
+
+
+async def get_all_strategy_configs() -> list:
+    """Return all strategy_config rows (strategy, enabled, updated_at)."""
+    return await get_pool().fetch(
+        "SELECT strategy, enabled, updated_at FROM strategy_config ORDER BY strategy"
+    )
+
+
+# --- last_alert (dedupe) ----------------------------------------------------
 async def upsert_last_alert(strategy, symbol, side, signal_id, alert_key) -> None:
     """Record the latest alert fingerprint (ON CONFLICT strategy+symbol)."""
     await get_pool().execute(

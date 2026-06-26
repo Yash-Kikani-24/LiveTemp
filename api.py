@@ -123,20 +123,49 @@ manager = ConnectionManager()
 # ===========================================================================
 # Telegram
 # ===========================================================================
+
+_STRATEGY_LABELS: dict[str, str] = {
+    "crt":      "CRT",
+    "sweep_4h": "4H Sweep",
+}
+
+
+def _fmt_price(v) -> str:
+    try:
+        return f"{float(v):,.4f}"
+    except (TypeError, ValueError):
+        return str(v)
+
+
 async def send_telegram(payload: dict) -> bool:
     """Send one alert to the configured Telegram chat. Returns True on a confirmed
     send. Never raises — a Telegram failure must not break the request."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("[telegram] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — skipping")
         return False
+
+    strategy = str(payload.get("strategy", "")).lower()
+    symbol   = payload.get("symbol", "")
+    side     = str(payload.get("side", "")).lower()
+    reason   = payload.get("reason", "")
+
+    strat_label = _STRATEGY_LABELS.get(strategy, strategy.upper())
+    dir_label   = "🟢  LONG" if side == "long" else "🔴  SHORT"
+
     text = (
-        f"\U0001F514 {str(payload.get('strategy', '')).upper()} "
-        f"{str(payload.get('side', '')).upper()} {payload.get('symbol', '')}\n"
-        f"Entry: {payload.get('entry')}\n"
-        f"SL: {payload.get('stop_loss')}\n"
-        f"TP: {payload.get('take_profit')}\n"
-        f"{payload.get('reason', '')}"
+        f"🔔  {symbol}\n"
+        f"\n"
+        f"Strategy  :  {strat_label}\n"
+        f"Direction :  {dir_label}\n"
+        f"\n"
+        f"Entry       :  {_fmt_price(payload.get('entry'))}\n"
+        f"Stop Loss   :  {_fmt_price(payload.get('stop_loss'))}\n"
+        f"Take Profit :  {_fmt_price(payload.get('take_profit'))}\n"
+        f"\n"
+        f"{'─' * 22}\n"
+        f"{reason}"
     )
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
         async with httpx.AsyncClient(timeout=TELEGRAM_TIMEOUT) as client:
@@ -188,13 +217,14 @@ async def ws_signals(ws: WebSocket):
 
 @app.post("/trend")
 async def set_trend(payload: dict):
-    """Upsert the user's manual per-symbol/per-strategy trend."""
+    """Upsert the user's manual per-symbol/per-strategy trend and optional R:R."""
     symbol = payload.get("symbol")
     strategy = payload.get("strategy")
     trend = payload.get("trend")
+    rr = payload.get("rr")          # optional; stored alongside trend for the strategy to use
     if not symbol or not strategy or trend is None:
         return {"ok": False, "error": "symbol, strategy and trend are required"}
-    await db.upsert_trend(symbol, strategy, trend)
+    await db.upsert_trend(symbol, strategy, trend, rr)
     return {"ok": True}
 
 
@@ -203,6 +233,35 @@ async def read_trend(symbol: str, strategy: str):
     """Read the user's manual trend for a symbol+strategy (or null)."""
     row = await db.get_trend(symbol, strategy)
     return _ser(row) if row else None
+
+
+@app.get("/strategy-config")
+async def get_strategy_config():
+    """Return the enabled state for every strategy.
+    Strategies not yet in the table are included with enabled=True (the default)."""
+    rows = await db.get_all_strategy_configs()
+    stored = {r["strategy"]: {"enabled": bool(r["enabled"]),
+                               "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None}
+              for r in rows}
+    result = []
+    for name in _STRATEGY_LABELS:
+        if name in stored:
+            result.append({"strategy": name, **stored[name]})
+        else:
+            result.append({"strategy": name, "enabled": True, "updated_at": None})
+    return result
+
+
+@app.post("/strategy-config")
+async def set_strategy_config(payload: dict):
+    """Toggle a strategy on (enabled=true) or off (enabled=false)."""
+    strategy = payload.get("strategy")
+    enabled  = payload.get("enabled")
+    if not strategy or not isinstance(enabled, bool):
+        return {"ok": False, "error": "strategy (str) and enabled (bool) required"}
+    await db.set_strategy_enabled(strategy, enabled)
+    return {"ok": True, "strategy": strategy, "enabled": enabled}
+
 
 # (The /bias endpoints were removed: the computed bias is no longer stored in
 #  Neon — strategies fetch it live from the Node backend when a setup is found.)

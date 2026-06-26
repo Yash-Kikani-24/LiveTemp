@@ -135,3 +135,20 @@ CREATE TABLE IF NOT EXISTS last_alert (
     last_sent_at TIMESTAMPTZ NOT NULL DEFAULT now(),  -- when the last alert for this key was sent
     PRIMARY KEY (strategy, symbol)
 );
+
+-- Migration: add rr column to an existing trend table (safe to re-run).
+ALTER TABLE trend ADD COLUMN IF NOT EXISTS rr NUMERIC DEFAULT 2.5;
+
+
+-- ----------------------------------------------------------------------------
+-- 6. strategy_config — per-strategy on/off switch
+-- ----------------------------------------------------------------------------
+-- The user can pause a strategy from the dashboard without removing its file.
+-- When a row is missing the engine defaults to enabled = true.
+-- FastAPI writes via POST /strategy-config; the Engine reads before each run.
+-- IDEMPOTENT: one row per strategy name.
+CREATE TABLE IF NOT EXISTS strategy_config (
+    strategy   TEXT        NOT NULL PRIMARY KEY,
+    enabled    BOOLEAN     NOT NULL DEFAULT TRUE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

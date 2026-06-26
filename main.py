@@ -202,6 +202,13 @@ FASTAPI_INTERNAL_URL = os.environ.get("FASTAPI_INTERNAL_URL", "http://127.0.0.1:
 FASTAPI_TIMEOUT = 1.5         # seconds (the recommended 1–2s band)
 SWEEP_INTERVAL = 180         # seconds between telegram_pending retry sweeps (a few min)
 
+# ---------------------------------------------------------------------------
+# Node backend keep-alive (Render free tier sleeps after 15 min of inactivity)
+# ---------------------------------------------------------------------------
+NODE_BACKEND_URL    = os.environ.get("NODE_BACKEND_URL", "http://localhost:3001").rstrip("/")
+KEEPALIVE_INTERVAL  = 600     # 10 minutes — well under Render's 15-min sleep threshold
+KEEPALIVE_TIMEOUT   = 30.0    # generous; server may be mid-wake on first ping after idle
+
 
 class Runner:
     """Drives strategies on each closed candle and runs the signal pipeline
@@ -233,12 +240,17 @@ class Runner:
         Isolated in try/except so one strategy's error can't sink the others or
         stall candle processing."""
         try:
+            if not await db.get_strategy_enabled(strat.name):
+                return
             candles = await db.get_recent_candles(symbol, strat.interval, strat.lookback)
             trend_row = await db.get_trend(symbol, strat.name)
-            # Context carries the manual trend (Neon `trend` table). The computed
-            # bias is no longer here — a strategy fetches it live from the Node
-            # backend when it finds a setup (see strategies/crt.py).
-            context = {"trend": trend_row["trend"] if trend_row else None}
+            # Context carries the manual trend + user-set R:R from the Neon `trend`
+            # table. The computed bias is not here — a strategy fetches it live from
+            # the Node backend when it finds a setup (see strategies/crt.py).
+            context = {
+                "trend": trend_row["trend"] if trend_row else None,
+                "rr": float(trend_row["rr"]) if trend_row and trend_row["rr"] is not None else None,
+            }
             # on_candle may be sync OR async (async lets a strategy await an HTTP
             # bias check); await it if it returned a coroutine.
             signal = strat.on_candle(symbol, candles, context)
@@ -362,6 +374,28 @@ class Runner:
 
 
 # ===========================================================================
+# NODE BACKEND KEEP-ALIVE
+# ===========================================================================
+async def node_keepalive():
+    """Ping the Render-hosted Node backend every KEEPALIVE_INTERVAL seconds so
+    the free-tier service never reaches the 15-minute inactivity threshold and
+    sleeps. Uses the cheapest available endpoint (root path). On failure it
+    just logs — a cold start is handled gracefully by the bias-fetch fallback
+    in each strategy."""
+    # Wait one full interval before the first ping so startup logs aren't noisy.
+    await asyncio.sleep(KEEPALIVE_INTERVAL)
+    ping_url = f"{NODE_BACKEND_URL}/"
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=KEEPALIVE_TIMEOUT) as client:
+                resp = await client.get(ping_url)
+            print(f"[keepalive] Node backend OK ({resp.status_code})")
+        except Exception as exc:           # noqa: BLE001
+            print(f"[keepalive] ping failed — server may be cold-starting: {exc!r}")
+        await asyncio.sleep(KEEPALIVE_INTERVAL)
+
+
+# ===========================================================================
 # ENTRYPOINT
 # ===========================================================================
 async def main():
@@ -382,7 +416,7 @@ async def main():
     runner = Runner(strategies)
     dm = DataManager(keep_n, on_closed=runner.on_closed_candle)
     try:
-        await asyncio.gather(dm.run(), runner.telegram_retry_sweep())
+        await asyncio.gather(dm.run(), runner.telegram_retry_sweep(), node_keepalive())
     finally:
         await db.close_pool()
 
