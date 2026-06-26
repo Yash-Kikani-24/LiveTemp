@@ -1,0 +1,25 @@
+# ============================================================================
+# Python dependencies for the Live Strategy Alert Engine
+# (Engine + FastAPI service — both run on the Oracle Cloud VM, one venv)
+# ============================================================================
+
+# --- FastAPI service (Process B: uvicorn api:app) ---------------------------
+fastapi>=0.115,<1.0
+# uvicorn[standard] pulls in websockets + uvloop + httptools — needed for the
+# WS /ws/signals push channel and good event-loop performance.
+uvicorn[standard]>=0.30,<1.0
+
+# --- Database access (db.py — shared by Engine + FastAPI) -------------------
+# Async Postgres driver for Neon. The whole stack is asyncio, so asyncpg
+# (not psycopg2) is the right fit.
+asyncpg>=0.29,<0.31
+
+# --- Engine: HTTP (REST backfill from Binance, Runner -> FastAPI internal
+#     call, Telegram Bot API sends) --------------------------------------------
+httpx>=0.27,<1.0
+
+# --- Engine: Binance market-data WebSocket (Data Manager) -------------------
+websockets>=13.0,<16.0
+
+# --- Config loading (.env -> environment) -----------------------------------
+python-dotenv>=1.0,<2.0
