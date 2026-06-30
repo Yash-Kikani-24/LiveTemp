@@ -54,6 +54,24 @@ CORS_ALLOWED_ORIGINS = [
 TELEGRAM_TIMEOUT = 10.0     # seconds; FastAPI's own call to the Telegram API
 
 
+def _build_telegram_routes() -> dict[str, dict]:
+    """Scan env for TELEGRAM_ROUTE_<STRATEGY>_CHAT_ID at startup.
+
+    e.g. TELEGRAM_ROUTE_CRT_1H_CHAT_ID=-100... maps "crt_1h" -> that chat_id.
+    Strategies with no entry fall back to the global TELEGRAM_CHAT_ID.
+    """
+    routes: dict[str, dict] = {}
+    prefix = "TELEGRAM_ROUTE_"
+    for key, val in os.environ.items():
+        if key.startswith(prefix) and key.endswith("_CHAT_ID") and val.strip():
+            seg = key[len(prefix):-len("_CHAT_ID")].lower()
+            routes[seg] = {"chat_id": val.strip()}
+    return routes
+
+
+TELEGRAM_ROUTES: dict[str, dict] = _build_telegram_routes()
+
+
 # --- lifecycle (shared Neon pool) -------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -125,7 +143,8 @@ manager = ConnectionManager()
 # ===========================================================================
 
 _STRATEGY_LABELS: dict[str, str] = {
-    "crt":      "CRT",
+    "crt_1h":   "CRT 1H",
+    "crt_4h":   "CRT 4H",
     "sweep_4h": "4H Sweep",
 }
 
@@ -138,13 +157,17 @@ def _fmt_price(v) -> str:
 
 
 async def send_telegram(payload: dict) -> bool:
-    """Send one alert to the configured Telegram chat. Returns True on a confirmed
+    """Send one alert to the per-strategy Telegram chat. Returns True on a confirmed
     send. Never raises — a Telegram failure must not break the request."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("[telegram] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set — skipping")
+    strategy = str(payload.get("strategy", "")).lower()
+
+    # Resolve destination: per-strategy route first, then global fallback.
+    chat_id = (TELEGRAM_ROUTES.get(strategy) or {}).get("chat_id") or TELEGRAM_CHAT_ID
+
+    if not TELEGRAM_BOT_TOKEN or not chat_id:
+        print("[telegram] TELEGRAM_BOT_TOKEN or chat_id not set — skipping")
         return False
 
-    strategy = str(payload.get("strategy", "")).lower()
     symbol   = payload.get("symbol", "")
     side     = str(payload.get("side", "")).lower()
     reason   = payload.get("reason", "")
@@ -170,7 +193,7 @@ async def send_telegram(payload: dict) -> bool:
     try:
         async with httpx.AsyncClient(timeout=TELEGRAM_TIMEOUT) as client:
             resp = await client.post(
-                url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text})
+                url, json={"chat_id": chat_id, "text": text})
             resp.raise_for_status()
         return True
     except Exception as exc:                   # noqa: BLE001

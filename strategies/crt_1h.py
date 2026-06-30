@@ -1,5 +1,5 @@
 """
-strategies/crt.py — live CRT strategy (fixed-stop mode).
+strategies/crt_1h.py — live CRT strategy on 1H timeframe (fixed-stop mode).
 
 Detection: 2-candle CRT pattern on 1H candles.
   Bullish: C1 bearish, C2 sweeps below C1 low, C2 closes bullish inside C1 range.
@@ -40,12 +40,12 @@ from ._shared import (
 # ============================================================================
 NODE_BACKEND_URL      = os.environ.get("NODE_BACKEND_URL", "http://localhost:3001").rstrip("/")
 BIAS_METHOD           = "dailyClose"
-NODE_BIAS_TIMEOUT     = 65.0   # long enough to survive a Render cold start (~30-60s)
+NODE_BIAS_TIMEOUT     = 65.0
 NODE_BIAS_RETRIES     = 3
 NODE_BIAS_RETRY_DELAY = 0.5
 
 # ============================================================================
-# CRT-specific constants
+# CRT-1H-specific constants
 # ============================================================================
 
 FIXED_STOP_POINTS_BY_SYMBOL = {
@@ -96,7 +96,7 @@ async def fetch_node_bias(symbol):
             last_err = exc
             if attempt < NODE_BIAS_RETRIES:
                 await asyncio.sleep(NODE_BIAS_RETRY_DELAY)
-    print(f"[crt] node bias fetch failed for {symbol} after "
+    print(f"[crt_1h] node bias fetch failed for {symbol} after "
           f"{NODE_BIAS_RETRIES} attempts: {last_err!r}")
     return None
 
@@ -105,8 +105,8 @@ async def fetch_node_bias(symbol):
 # The drop-in strategy
 # ============================================================================
 
-class CRTStrategy(Strategy):
-    name     = "crt"
+class CRT1HStrategy(Strategy):
+    name     = "crt_1h"
     symbols  = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
     interval = "1h"
     lookback = 6
@@ -168,6 +168,7 @@ class CRTStrategy(Strategy):
             return None
         net_rr = round(jp["rrAfterFees"], 3)
 
+        # setup available after C2 closes (1H after C2 open)
         setup_found = c2["t"] + ONE_HOUR_MS
         if not (7 <= ist(setup_found).hour < 18):
             return None
