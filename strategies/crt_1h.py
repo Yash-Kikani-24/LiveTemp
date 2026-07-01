@@ -22,11 +22,6 @@ Hard gates (still block the signal):
 
 from __future__ import annotations
 
-import asyncio
-import os
-
-import httpx
-
 from .base import Signal, Strategy
 from ._shared import (
     ONE_HOUR_MS,
@@ -34,15 +29,6 @@ from ._shared import (
     ENGINE_MIN_RR, MAX_POS_AFTER_FEES, DEFAULT_TARGET_RR,
     ist, _norm, _ctx_get, _norm_dir, calc_jp_risk,
 )
-
-# ============================================================================
-# Node backend bias (informational — fetched live, reported in reason string)
-# ============================================================================
-NODE_BACKEND_URL      = os.environ.get("NODE_BACKEND_URL", "http://localhost:3001").rstrip("/")
-BIAS_METHOD           = "dailyClose"
-NODE_BIAS_TIMEOUT     = 65.0
-NODE_BIAS_RETRIES     = 3
-NODE_BIAS_RETRY_DELAY = 0.5
 
 # ============================================================================
 # CRT-1H-specific constants
@@ -73,32 +59,6 @@ def detect(cands):
                 and c2["l"] >= c1["l"]):
             out.append(("Bearish", c1, c2))
     return out
-
-
-# ============================================================================
-# Node bias fetch (informational)
-# ============================================================================
-
-async def fetch_node_bias(symbol):
-    """Fetch computed dailyClose bias from the Node backend with retries.
-    Returns 'BULLISH'/'BEARISH'/'NEUTRAL', or None if every attempt fails.
-    Failure is treated as NEUTRAL by the caller — the setup still fires."""
-    url      = f"{NODE_BACKEND_URL}/api/bias/{BIAS_METHOD}"
-    last_err = None
-    for attempt in range(1, NODE_BIAS_RETRIES + 1):
-        try:
-            async with httpx.AsyncClient(timeout=NODE_BIAS_TIMEOUT) as client:
-                resp = await client.get(url, params={"symbol": symbol})
-                resp.raise_for_status()
-                data = resp.json()
-            return _norm_dir((data.get("result") or {}).get("signal"))
-        except Exception as exc:               # noqa: BLE001
-            last_err = exc
-            if attempt < NODE_BIAS_RETRIES:
-                await asyncio.sleep(NODE_BIAS_RETRY_DELAY)
-    print(f"[crt_1h] node bias fetch failed for {symbol} after "
-          f"{NODE_BIAS_RETRIES} attempts: {last_err!r}")
-    return None
 
 
 # ============================================================================
@@ -140,14 +100,6 @@ class CRT1HStrategy(Strategy):
         else:
             trend_alignment = "NO-TREND-SET"
 
-        # --- node bias alignment (informational — does not block) ------------
-        node_bias      = await fetch_node_bias(symbol)
-        effective_bias = node_bias if node_bias is not None else "NEUTRAL"
-        agree_ok       = {"long": ("BULLISH", "NEUTRAL"),
-                          "short": ("BEARISH", "NEUTRAL")}[direction]
-        bias_alignment = "agree" if effective_bias in agree_ok else "conflict"
-        bias_label     = node_bias if node_bias is not None else "unreachable→neutral"
-
         # --- R:R from context (dashboard) or fallback -----------------------
         ctx_rr    = context.get("rr") if isinstance(context, dict) else getattr(context, "rr", None)
         target_rr = float(ctx_rr) if ctx_rr is not None else FIXED_TARGET_RR
@@ -177,12 +129,8 @@ class CRT1HStrategy(Strategy):
         if net_rr <= ENGINE_MIN_RR:
             return None
 
-        # --- reason string --------------------------------------------------
-        reason = (
-            f"{trend_alignment}  ·  manual: {manual_trend or 'none'}  →  setup: {direction}\n"
-            f"Bias (node)  :  {bias_label}  ({bias_alignment})  ·  Net R:R  :  {net_rr}\n"
-            f"Fixed stop   :  {fixed_stop_points} pts  ·  {target_rr}R  ·  {ist(setup_found):%d %b %Y  %H:%M} IST"
-        )
+        # --- reason string: trend indicator only (with-trend vs not) --------
+        reason = "✅ With Trend" if trend_alignment == "WITH-TREND" else "❌ Not With Trend"
 
         return Signal(
             strategy=self.name,

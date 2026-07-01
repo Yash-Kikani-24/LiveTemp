@@ -175,18 +175,17 @@ async def send_telegram(payload: dict) -> bool:
     strat_label = _STRATEGY_LABELS.get(strategy, strategy.upper())
     dir_label   = "🟢  LONG" if side == "long" else "🔴  SHORT"
 
+    # `reason` now carries a single short trend indicator (e.g. "✅ With Trend").
+    trend_line = f"   ·   {reason}" if reason else ""
+
     text = (
-        f"🔔  {symbol}\n"
+        f"🔔  {symbol}   ·   {strat_label}\n"
         f"\n"
-        f"Strategy  :  {strat_label}\n"
-        f"Direction :  {dir_label}\n"
+        f"{dir_label}{trend_line}\n"
         f"\n"
-        f"Entry       :  {_fmt_price(payload.get('entry'))}\n"
-        f"Stop Loss   :  {_fmt_price(payload.get('stop_loss'))}\n"
-        f"Take Profit :  {_fmt_price(payload.get('take_profit'))}\n"
-        f"\n"
-        f"{'─' * 22}\n"
-        f"{reason}"
+        f"Entry   :  {_fmt_price(payload.get('entry'))}\n"
+        f"Stop    :  {_fmt_price(payload.get('stop_loss'))}\n"
+        f"Target  :  {_fmt_price(payload.get('take_profit'))}"
     )
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"

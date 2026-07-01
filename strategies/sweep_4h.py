@@ -23,8 +23,8 @@ from __future__ import annotations
 
 import time
 
-from base import Signal, Strategy
-from _shared import (
+from .base import Signal, Strategy
+from ._shared import (
     POSITION,
     FEE_PCT,
     ALLOWED_RISK,
@@ -33,7 +33,6 @@ from _shared import (
     MAX_POS_AFTER_FEES,
     DEFAULT_TARGET_RR,
     ONE_HOUR_MS,
-    ist,
     _norm,
     _ctx_get,
     _norm_dir,
@@ -150,16 +149,8 @@ class Sweep4HStrategy(Strategy):
         if net_rr <= ENGINE_MIN_RR:
             return None
 
-        # Build the human-readable reason string.
-        sweep_detail = (
-            f"C2L {c2['l']:.4f} < C1L {c1['l']:.4f}" if direction == "long"
-            else f"C2H {c2['h']:.4f} > C1H {c1['h']:.4f}"
-        )
-        reason = (
-            f"{trend_alignment}  ·  manual: {manual_trend or 'none'}  →  setup: {direction}"
-            f"\nSweep  :  {sweep_detail}  ·  Net R:R  :  {net_rr}"
-            f"\nRisk   :  {risk:.4f} pts  ·  {target_rr}R  ·  {ist(c2['t']):%d %b %Y  %H:%M} IST"
-        )
+        # Trend indicator only: with-trend vs not (counter-trend / no-trend-set).
+        reason = "✅ With Trend" if trend_alignment == "WITH-TREND" else "❌ Not With Trend"
 
         # Record the fired C2 and return the signal.
         fired[symbol] = c2["t"]

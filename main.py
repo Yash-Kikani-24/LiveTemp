@@ -54,7 +54,12 @@ def discover_strategies():
         name = mod_info.name
         if name.startswith("_") or name == "base":
             continue
-        module = importlib.import_module(f"{strategies_pkg.__name__}.{name}")
+        try:
+            module = importlib.import_module(f"{strategies_pkg.__name__}.{name}")
+        except Exception as exc:               # noqa: BLE001 — bad file: skip, don't crash
+            print(f"[discover] SKIPPED strategy module {name!r}: {exc!r} — "
+                  f"other strategies still load")
+            continue
         for _, obj in inspect.getmembers(module, inspect.isclass):
             if (issubclass(obj, Strategy) and obj is not Strategy
                     and getattr(obj, "name", "") and obj not in seen):
