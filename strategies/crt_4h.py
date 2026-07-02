@@ -27,7 +27,7 @@ from ._shared import (
     ONE_HOUR_MS,
     POSITION, FEE_PCT, ALLOWED_RISK, LEVERAGE,
     ENGINE_MIN_RR, MAX_POS_AFTER_FEES, DEFAULT_TARGET_RR,
-    ist, _norm, _ctx_get, _norm_dir, calc_jp_risk,
+    ist, _norm, _ctx_get, _norm_dir, calc_jp_risk, fmt_setup_candles,
 )
 
 FOUR_HOUR_MS = 4 * ONE_HOUR_MS
@@ -131,8 +131,9 @@ class CRT4HStrategy(Strategy):
         if net_rr <= ENGINE_MIN_RR:
             return None
 
-        # --- reason string: trend indicator only (with-trend vs not) --------
+        # --- reason: trend indicator (line 0) + C1/C2 setup-candle times -----
         reason = "✅ With Trend" if trend_alignment == "WITH-TREND" else "❌ Not With Trend"
+        reason = f"{reason}\n{fmt_setup_candles(c1['t'], c2['t'])}"
 
         return Signal(
             strategy=self.name,

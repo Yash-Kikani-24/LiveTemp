@@ -101,6 +101,20 @@ def _norm_dir(raw) -> str | None:
     return v or None
 
 
+def fmt_setup_candles(c1_ms, c2_ms) -> str:
+    """Two-line 'Setup candles' block, appended to a Signal.reason as extra lines.
+
+    A pattern-based strategy (CRT / Sweep) forms its setup from two candles C1 and
+    C2; this renders their OPEN times in IST so the Telegram alert can show exactly
+    which candles produced the signal. The Telegram formatter treats reason line 0
+    as the inline trend indicator and everything below it as a details block, so
+    this block appears beneath the price lines. Kept here (not in each strategy) so
+    all pattern strategies share one consistent, easy-to-read layout."""
+    c1 = ist(int(c1_ms)).strftime("%a %d %b · %H:%M")
+    c2 = ist(int(c2_ms)).strftime("%a %d %b · %H:%M")
+    return f"🕯 Setup candles (IST)\n   C1  →  {c1}\n   C2  →  {c2}"
+
+
 # ============================================================================
 # jp-risk calculator — line-for-line port of backend/src/tools/jpRisk.js.
 # Every strategy that needs post-fee R:R or position sizing calls this.

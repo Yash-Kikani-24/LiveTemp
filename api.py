@@ -146,6 +146,7 @@ _STRATEGY_LABELS: dict[str, str] = {
     "crt_1h":   "CRT 1H",
     "crt_4h":   "CRT 4H",
     "sweep_4h": "4H Sweep",
+    "rmi_4h":   "RMI 4H",
 }
 
 
@@ -170,13 +171,21 @@ async def send_telegram(payload: dict) -> bool:
 
     symbol   = payload.get("symbol", "")
     side     = str(payload.get("side", "")).lower()
-    reason   = payload.get("reason", "")
+    reason   = str(payload.get("reason", "") or "")
 
     strat_label = _STRATEGY_LABELS.get(strategy, strategy.upper())
     dir_label   = "🟢  LONG" if side == "long" else "🔴  SHORT"
 
-    # `reason` now carries a single short trend indicator (e.g. "✅ With Trend").
-    trend_line = f"   ·   {reason}" if reason else ""
+    # `reason` line 0 is the short trend indicator (e.g. "✅ With Trend"); any lines
+    # below it are an optional details block (e.g. the C1/C2 setup-candle times that
+    # pattern strategies attach). Show line 0 inline with the direction, and the rest
+    # as its own block beneath the prices. Single-line reasons render unchanged.
+    reason_lines    = reason.split("\n")
+    trend_indicator = reason_lines[0].strip()
+    details_block   = "\n".join(reason_lines[1:]).rstrip("\n")
+
+    trend_line      = f"   ·   {trend_indicator}" if trend_indicator else ""
+    details_section = f"\n\n{details_block}" if details_block.strip() else ""
 
     text = (
         f"🔔  {symbol}   ·   {strat_label}\n"
@@ -186,6 +195,7 @@ async def send_telegram(payload: dict) -> bool:
         f"Entry   :  {_fmt_price(payload.get('entry'))}\n"
         f"Stop    :  {_fmt_price(payload.get('stop_loss'))}\n"
         f"Target  :  {_fmt_price(payload.get('take_profit'))}"
+        f"{details_section}"
     )
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
