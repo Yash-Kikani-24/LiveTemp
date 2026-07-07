@@ -18,18 +18,14 @@ Three logical pieces (webinfo.txt section 3.1):
     Also runs the telegram_pending retry sweep (periodic + on startup).
 
   STRATEGIES — drop-in files; see strategies/base.py.
-
-All logic is intentionally stubbed — only the structure is here.
 """
 
 from __future__ import annotations
 
 import asyncio
-import importlib
 import inspect
 import json
 import os
-import pkgutil
 from collections import defaultdict
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -38,34 +34,15 @@ import httpx
 import websockets
 
 import db
-import strategies as strategies_pkg
-from strategies.base import Strategy
+from strategies.registry import discover as discover_strategies
 
 
 # ===========================================================================
 # STRATEGY DISCOVERY
 # ===========================================================================
-def discover_strategies():
-    """Auto-import every module in the strategies/ package and instantiate every
-    concrete Strategy subclass found. Adding a strategy = dropping one file."""
-    found = []
-    seen = set()
-    for mod_info in pkgutil.iter_modules(strategies_pkg.__path__):
-        name = mod_info.name
-        if name.startswith("_") or name == "base":
-            continue
-        try:
-            module = importlib.import_module(f"{strategies_pkg.__name__}.{name}")
-        except Exception as exc:               # noqa: BLE001 — bad file: skip, don't crash
-            print(f"[discover] SKIPPED strategy module {name!r}: {exc!r} — "
-                  f"other strategies still load")
-            continue
-        for _, obj in inspect.getmembers(module, inspect.isclass):
-            if (issubclass(obj, Strategy) and obj is not Strategy
-                    and getattr(obj, "name", "") and obj not in seen):
-                seen.add(obj)
-                found.append(obj())
-    return found
+# discover_strategies() lives in strategies/registry.py (imported above) so the
+# Engine and the API share ONE discovery implementation — see that module's
+# docstring. Dropping a file in strategies/ is all it takes to add a strategy.
 
 
 def subscriptions_from_strategies(strategies):
@@ -293,7 +270,8 @@ class Runner:
 
         # 1. FASTAPI FIRST (strict timeout, best-effort) ----------------------
         #    `delivered` is True only when Telegram actually sent (not merely 2xx).
-        payload = {**asdict(signal), "alert_key": alert_key}
+        payload = {**asdict(signal), "alert_key": alert_key,
+                   "created_at": datetime.now(timezone.utc).isoformat()}
         delivered = await self._post_to_fastapi(payload)
 
         # 2. UNCONDITIONAL DB WRITE (telegram_pending defaults true) -----------
@@ -366,6 +344,9 @@ class Runner:
                         "stop_loss": float(s["stop_loss"]),
                         "take_profit": float(s["take_profit"]), "reason": s["reason"],
                         "signal_id": s["id"], "alert_key": str(s["id"]),
+                        # Preserve the ORIGINAL detection time so a retried alert still
+                        # shows when the entry fired, not when it was re-sent.
+                        "created_at": s["created_at"].isoformat(),
                     }
                     if await self._post_to_fastapi(payload):
                         # FastAPI cleared telegram_pending; just log the delivery.

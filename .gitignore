@@ -46,3 +46,5 @@ Thumbs.db
 
 # Jupyter Notebooks checkpoints
 .ipynb_checkpoints/
+
+frontend

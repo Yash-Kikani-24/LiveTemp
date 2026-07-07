@@ -101,18 +101,82 @@ def _norm_dir(raw) -> str | None:
     return v or None
 
 
-def fmt_setup_candles(c1_ms, c2_ms) -> str:
-    """Two-line 'Setup candles' block, appended to a Signal.reason as extra lines.
+def trend_state(manual_trend, want) -> str:
+    """Classify the user's manual trend against the setup's required direction into
+    one canonical state: 'WITH-TREND', 'COUNTER-TREND', or 'NO-TREND-SET'.
 
-    A pattern-based strategy (CRT / Sweep) forms its setup from two candles C1 and
-    C2; this renders their OPEN times in IST so the Telegram alert can show exactly
-    which candles produced the signal. The Telegram formatter treats reason line 0
-    as the inline trend indicator and everything below it as a details block, so
-    this block appears beneath the price lines. Kept here (not in each strategy) so
-    all pattern strategies share one consistent, easy-to-read layout."""
-    c1 = ist(int(c1_ms)).strftime("%a %d %b · %H:%M")
-    c2 = ist(int(c2_ms)).strftime("%a %d %b · %H:%M")
-    return f"🕯 Setup candles (IST)\n   C1  →  {c1}\n   C2  →  {c2}"
+    `want` is the direction ('BULLISH'/'BEARISH') the trend must be for the setup to
+    count as with-trend. Kept here so every strategy classifies identically."""
+    if manual_trend == want:
+        return "WITH-TREND"
+    if manual_trend in ("BULLISH", "BEARISH"):
+        return "COUNTER-TREND"
+    return "NO-TREND-SET"
+
+
+_TREND_INDICATOR = {
+    "WITH-TREND":    "✅ With Trend",
+    "COUNTER-TREND": "⚠️ Counter-Trend",
+    "NO-TREND-SET":  "➖ No Trend Set",
+}
+
+
+def fmt_trend(alignment) -> str:
+    """Line-0 trend indicator for a Signal.reason — the string the dashboard's pill
+    and the Telegram alert read. Three distinct states so the UI can tell
+    counter-trend apart from 'no manual trend set' (both used to collapse to '❌')."""
+    return _TREND_INDICATOR.get(alignment, "➖ No Trend Set")
+
+
+def fmt_setup_candles(*candle_ms) -> str:
+    """'Setup candles' block appended to a Signal.reason as extra lines.
+
+    Pass the OPEN time (epoch ms) of EACH candle that formed the setup, oldest
+    first: a pattern strategy (CRT / Sweep) passes two (→ C1, C2); a single-candle
+    strategy (RSI crossover) passes one (→ C1). Rendered in IST so the dashboard and
+    Telegram show exactly which candle(s) produced the signal — one 'Cn → …' line
+    each. The Telegram formatter treats reason line 0 as the inline trend indicator
+    and everything below it as this details block."""
+    if not candle_ms:
+        return ""
+    lines = ["🕯 Setup candles (IST)"]
+    for i, ms in enumerate(candle_ms, start=1):
+        t = ist(int(ms)).strftime("%a %d %b · %H:%M")
+        lines.append(f"   C{i}  →  {t}")
+    return "\n".join(lines)
+
+
+def fmt_setup_time(ms) -> str:
+    """Single 'setup candle' time line (IST) for a Signal.reason.
+
+    Used by single-candle strategies (e.g. RSI) that surface indicator readings
+    instead of a full setup-candles block, but still want the setup candle's time
+    shown in the Telegram alert. Rendered like fmt_setup_candles' timestamps. It
+    carries no 'Cn →' / 'SMA…' token, so the dashboard's reason parser ignores it
+    (the card keeps showing just the indicator readings) while Telegram prints it
+    in the details block."""
+    t = ist(int(ms)).strftime("%a %d %b · %H:%M")
+    return f"🕯 Setup candle (IST):  {t}"
+
+
+def fmt_indicators(title, *pairs) -> str:
+    """Indicator-readings block appended to a Signal.reason as extra lines.
+
+    Pass a short `title` (e.g. 'SMA/EMA on RSI (signal candle)') and then any
+    number of (label, value) pairs — each becomes a 'label → value' line. Used by
+    indicator strategies (e.g. RSI) to surface the key readings ON the signal
+    candle in the dashboard and Telegram, in place of setup-candle times. The
+    dashboard parser keys off the 'SMA…'/'EMA…' labels, so keep them stable.
+
+    Formatted to match fmt_setup_candles: the Telegram formatter treats reason
+    line 0 as the trend indicator and everything below it as the details block,
+    so this renders there automatically too."""
+    if not pairs:
+        return ""
+    lines = [f"📊 {title}"]
+    for label, value in pairs:
+        lines.append(f"   {label}  →  {value}")
+    return "\n".join(lines)
 
 
 # ============================================================================

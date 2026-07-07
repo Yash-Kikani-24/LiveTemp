@@ -30,13 +30,19 @@ class Strategy:
     Base interface for a drop-in strategy.
 
     A concrete strategy sets these class attributes and implements on_candle:
-        name:     unique strategy name
+        name:     unique strategy name (the machine id, e.g. 'rsi_4h')
+        label:    human-friendly display name (e.g. 'RSI 4H'); optional —
+                  falls back to a title-cased form of `name` when left blank.
+                  This is what the frontend and Telegram alerts show, so setting
+                  it here is all that's needed for a new strategy to appear
+                  everywhere with a nice name.
         symbols:  list of symbols it subscribes to, e.g. ['BTCUSDT']
         interval: candle interval it runs on, e.g. '1h'
         lookback: how many recent candles it needs (N)
     """
 
     name: str = ""
+    label: str = ""
     symbols: list[str] = []
     interval: str = ""
     lookback: int = 0

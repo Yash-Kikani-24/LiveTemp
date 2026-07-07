@@ -32,7 +32,7 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 import httpx
 from dotenv import load_dotenv
@@ -40,6 +40,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 import db
+from strategies.registry import strategy_meta
 
 load_dotenv()
 
@@ -142,12 +143,11 @@ manager = ConnectionManager()
 # Telegram
 # ===========================================================================
 
-_STRATEGY_LABELS: dict[str, str] = {
-    "crt_1h":   "CRT 1H",
-    "crt_4h":   "CRT 4H",
-    "sweep_4h": "4H Sweep",
-    "rmi_4h":   "RMI 4H",
-}
+def _strategy_labels() -> dict[str, str]:
+    """{name: label} for every strategy currently on disk. Discovered fresh so a
+    newly dropped strategy file is picked up without restarting (Telegram + the
+    /strategy-config listing both read through here)."""
+    return {m["name"]: m["label"] for m in strategy_meta()}
 
 
 def _fmt_price(v) -> str:
@@ -155,6 +155,27 @@ def _fmt_price(v) -> str:
         return f"{float(v):,.4f}"
     except (TypeError, ValueError):
         return str(v)
+
+
+# IST has no DST, so a fixed +05:30 offset is always correct.
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _fmt_ist(v) -> str:
+    """Format a detection timestamp as 'DD Mon YYYY, HH:MM IST'. Accepts an ISO
+    string or a datetime; naive values are treated as UTC. Falls back to the
+    current time when v is missing or unparseable (never raises)."""
+    dt = v if isinstance(v, datetime) else None
+    if dt is None and v:
+        try:
+            dt = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        except ValueError:
+            dt = None
+    if dt is None:
+        dt = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(IST).strftime("%d %b %Y, %H:%M IST")
 
 
 async def send_telegram(payload: dict) -> bool:
@@ -173,7 +194,7 @@ async def send_telegram(payload: dict) -> bool:
     side     = str(payload.get("side", "")).lower()
     reason   = str(payload.get("reason", "") or "")
 
-    strat_label = _STRATEGY_LABELS.get(strategy, strategy.upper())
+    strat_label = _strategy_labels().get(strategy, strategy.upper())
     dir_label   = "🟢  LONG" if side == "long" else "🔴  SHORT"
 
     # `reason` line 0 is the short trend indicator (e.g. "✅ With Trend"); any lines
@@ -194,7 +215,8 @@ async def send_telegram(payload: dict) -> bool:
         f"\n"
         f"Entry   :  {_fmt_price(payload.get('entry'))}\n"
         f"Stop    :  {_fmt_price(payload.get('stop_loss'))}\n"
-        f"Target  :  {_fmt_price(payload.get('take_profit'))}"
+        f"Target  :  {_fmt_price(payload.get('take_profit'))}\n"
+        f"Found   :  {_fmt_ist(payload.get('created_at'))}"
         f"{details_section}"
     )
 
@@ -267,6 +289,23 @@ async def read_trend(symbol: str, strategy: str):
     return _ser(row) if row else None
 
 
+@app.get("/strategies")
+async def list_strategies():
+    """The strategy catalogue the frontend renders everywhere (menus, filters,
+    signal labels). Auto-discovered from the strategies/ folder and merged with
+    each strategy's enabled toggle, so dropping ONE strategy file makes it appear
+    across the whole UI with no manual edits.
+
+    Each entry: { name, label, interval, symbols, enabled }.
+    """
+    rows = await db.get_all_strategy_configs()
+    enabled_map = {r["strategy"]: bool(r["enabled"]) for r in rows}
+    return [
+        {**m, "enabled": enabled_map.get(m["name"], True)}   # default ON
+        for m in strategy_meta()
+    ]
+
+
 @app.get("/strategy-config")
 async def get_strategy_config():
     """Return the enabled state for every strategy.
@@ -276,7 +315,8 @@ async def get_strategy_config():
                                "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None}
               for r in rows}
     result = []
-    for name in _STRATEGY_LABELS:
+    for m in strategy_meta():
+        name = m["name"]
         if name in stored:
             result.append({"strategy": name, **stored[name]})
         else:
@@ -307,11 +347,17 @@ async def signals_since(since: str | None = None):
 
 
 @app.get("/signals/history")
-async def signals_history(limit: int = 50, offset: int = 0):
-    """Paginated historical setups (indexed on created_at), newest-first."""
+async def signals_history(limit: int = 50, offset: int = 0,
+                          strategy: str | None = None,
+                          symbol: str | None = None,
+                          side: str | None = None):
+    """Paginated historical setups (indexed on created_at), newest-first.
+
+    Optional strategy/symbol/side filters run in SQL so filtering returns the most
+    recent matches across ALL history, independent of the current page window."""
     limit = max(1, min(int(limit), 500))      # clamp to a sane page size
     offset = max(0, int(offset))
-    rows = await db.get_signals_history(limit, offset)
+    rows = await db.get_signals_history(limit, offset, strategy, symbol, side)
     return [_ser(r) for r in rows]
 
 

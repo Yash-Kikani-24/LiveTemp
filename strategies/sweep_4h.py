@@ -39,6 +39,7 @@ from ._shared import (
     _norm_dir,
     calc_jp_risk,
     fmt_setup_candles,
+    fmt_trend,
 )
 
 FOUR_HOUR_MS = 4 * ONE_HOUR_MS
@@ -53,6 +54,7 @@ MIN_STOP_POINTS_BY_SYMBOL = {
 
 class Sweep4HStrategy(Strategy):
     name = "sweep_4h"
+    label = "4H Sweep"
     symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
     interval = "4h"
     lookback = 6
@@ -152,8 +154,7 @@ class Sweep4HStrategy(Strategy):
             return None
 
         # Reason: trend indicator (line 0) + C1/C2 setup-candle times below it.
-        reason = "✅ With Trend" if trend_alignment == "WITH-TREND" else "❌ Not With Trend"
-        reason = f"{reason}\n{fmt_setup_candles(c1['t'], c2['t'])}"
+        reason = f"{fmt_trend(trend_alignment)}\n{fmt_setup_candles(c1['t'], c2['t'])}"
 
         # Record the fired C2 and return the signal.
         fired[symbol] = c2["t"]

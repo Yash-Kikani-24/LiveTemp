@@ -1,6 +1,6 @@
 """
-strategies/rmi_4h.py — live port of the RSI(14) + EMA(45)/SMA(9)-on-RSI
-crossover strategy (backtest/RMI.py) on the 4H timeframe.
+strategies/rsi_4h.py — live port of the RSI(14) + EMA(45)/SMA(9)-on-RSI
+crossover strategy (backtest/RSI.py) on the 4H timeframe.
 
 Detection (evaluated on each CLOSED 4H candle):
   1. RSI(14) (Wilder) on close.
@@ -24,10 +24,10 @@ Every valid setup fires regardless of trend alignment; the manual trend is only
 reported in the reason string.
 
 Hard gates (still block the signal):
-  * jp-risk: net R:R after fees > RMI_MIN_NET_RR; max position ≤ MAX_POS_AFTER_FEES.
+  * jp-risk: net R:R after fees > RSI_MIN_NET_RR; max position ≤ MAX_POS_AFTER_FEES.
 
 Indicators are reimplemented in pure Python (the live app has no pandas/numpy)
-and mirror the pandas semantics used in backtest/RMI.py line-for-line.
+and mirror the pandas semantics used in backtest/RSI.py line-for-line.
 """
 
 from __future__ import annotations
@@ -37,10 +37,11 @@ from ._shared import (
     POSITION, FEE_PCT, ALLOWED_RISK, LEVERAGE,
     MAX_POS_AFTER_FEES,
     _norm, _ctx_get, _norm_dir, calc_jp_risk,
+    fmt_indicators, fmt_setup_time, fmt_trend, trend_state,
 )
 
 # ============================================================================
-# RMI-specific constants (mirror backtest/RMI.py)
+# RSI-specific constants (mirror backtest/RSI.py)
 # ============================================================================
 
 RSI_PERIOD    = 14
@@ -51,11 +52,11 @@ ATR_MULT      = 1.0         # stop distance = ATR_MULT × ATR
 SL_MIN_PCT    = 0.01        # stop floor: never tighter than 1.0% of entry
 SL_MAX_PCT    = 0.03        # stop ceiling: never wider than 3.0% of entry
 RR_TARGET     = 6           # 1:6 -> TP = RR_TARGET × stop distance (fixed, not from context)
-RMI_MIN_NET_RR = 1.8        # hard gate: net RR after fees must exceed this (backtest value)
+RSI_MIN_NET_RR = 1.8        # hard gate: net RR after fees must exceed this (backtest value)
 
 
 # ============================================================================
-# Pure-Python indicators (mirror the pandas math in backtest/RMI.py)
+# Pure-Python indicators (mirror the pandas math in backtest/RSI.py)
 # ============================================================================
 
 def _wilder_rsi(closes, period=RSI_PERIOD):
@@ -138,8 +139,9 @@ def _wilder_atr(highs, lows, closes, period=ATR_PERIOD):
 # The drop-in strategy
 # ============================================================================
 
-class RMI4HStrategy(Strategy):
-    name     = "rmi_4h"
+class RSI4HStrategy(Strategy):
+    name     = "rsi_4h"
+    label    = "RSI 4H"
     symbols  = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
     interval = "4h"
     # EMA(45)-on-RSI needs a long warm-up to converge; keep a generous buffer.
@@ -199,13 +201,23 @@ class RMI4HStrategy(Strategy):
         net_rr = round(jp["rrAfterFees"], 3)
         if jp["maxPositionAfterFees"] > MAX_POS_AFTER_FEES:
             return None
-        if net_rr <= RMI_MIN_NET_RR:
+        if net_rr <= RSI_MIN_NET_RR:
             return None
 
         # --- manual trend alignment (informational — does not block) --------
         manual_trend = _norm_dir(_ctx_get(context, "trend"))
         want = "BULLISH" if direction == "long" else "BEARISH"
-        reason = "✅ With Trend" if manual_trend == want else "❌ Not With Trend"
+        # reason: trend indicator (line 0) + the two indicator readings that
+        # produced the crossover on the signal candle — the SMA(9) and EMA(45)
+        # computed ON the RSI line (0–100 scale) — plus the setup candle's time.
+        # The dashboard card shows only the readings (its parser ignores the
+        # setup-time line); the Telegram alert prints the setup time too, so we
+        # still know exactly which candle produced the setup.
+        reason = (
+            f"{fmt_trend(trend_state(manual_trend, want))}\n"
+            f"{fmt_indicators('SMA/EMA on RSI (signal candle)', ('SMA 9', f'{s_now:.2f}'), ('EMA 45', f'{e_now:.2f}'))}\n"
+            f"{fmt_setup_time(cs[-1]['t'])}"
+        )
 
         return Signal(
             strategy=self.name,

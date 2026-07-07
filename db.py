@@ -9,8 +9,6 @@ Imported by BOTH processes:
 
 Backed by a single asyncpg connection pool. All writes are idempotent (upserts
 keyed per schema.sql) so any component can restart without duplicating data.
-
-NOTE: logic is intentionally stubbed — only the structure/signatures are here.
 """
 
 from __future__ import annotations
@@ -190,12 +188,27 @@ async def get_signals_since(since):
     )
 
 
-async def get_signals_history(limit, offset):
-    """Paginated historical signals (GET /signals/history), newest-first."""
+async def get_signals_history(limit, offset, strategy=None, symbol=None, side=None):
+    """Paginated historical signals (GET /signals/history), newest-first.
+
+    Optional strategy/symbol/side filters are applied in SQL so a page always
+    returns matches ACROSS the whole table (not just rows that happen to sit on
+    the current offset window). All filters are bound as parameters."""
+    conds, args = [], []
+    if strategy:
+        args.append(strategy);        conds.append(f"strategy = ${len(args)}")
+    if symbol:
+        args.append(symbol);          conds.append(f"symbol = ${len(args)}")
+    if side:
+        args.append(side.lower());    conds.append(f"lower(side) = ${len(args)}")
+    where = f"WHERE {' AND '.join(conds)}" if conds else ""
+
+    args.append(int(limit));  limit_ph  = f"${len(args)}"
+    args.append(int(offset)); offset_ph = f"${len(args)}"
     return await get_pool().fetch(
-        f"SELECT {_SIGNAL_COLS} FROM signals "
-        "ORDER BY created_at DESC LIMIT $1 OFFSET $2",
-        int(limit), int(offset),
+        f"SELECT {_SIGNAL_COLS} FROM signals {where} "
+        f"ORDER BY created_at DESC LIMIT {limit_ph} OFFSET {offset_ph}",
+        *args,
     )
 
 

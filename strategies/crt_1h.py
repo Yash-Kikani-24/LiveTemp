@@ -27,7 +27,7 @@ from ._shared import (
     ONE_HOUR_MS,
     POSITION, FEE_PCT, ALLOWED_RISK, LEVERAGE,
     ENGINE_MIN_RR, MAX_POS_AFTER_FEES, DEFAULT_TARGET_RR,
-    ist, _norm, _ctx_get, _norm_dir, calc_jp_risk, fmt_setup_candles,
+    ist, _norm, _ctx_get, _norm_dir, calc_jp_risk, fmt_setup_candles, fmt_trend,
 )
 
 # ============================================================================
@@ -67,6 +67,7 @@ def detect(cands):
 
 class CRT1HStrategy(Strategy):
     name     = "crt_1h"
+    label    = "CRT 1H"
     symbols  = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
     interval = "1h"
     lookback = 6
@@ -130,8 +131,7 @@ class CRT1HStrategy(Strategy):
             return None
 
         # --- reason: trend indicator (line 0) + C1/C2 setup-candle times -----
-        reason = "✅ With Trend" if trend_alignment == "WITH-TREND" else "❌ Not With Trend"
-        reason = f"{reason}\n{fmt_setup_candles(c1['t'], c2['t'])}"
+        reason = f"{fmt_trend(trend_alignment)}\n{fmt_setup_candles(c1['t'], c2['t'])}"
 
         return Signal(
             strategy=self.name,
