@@ -1,0 +1,162 @@
+"""
+strategies/sweep_4h_enhanced.py — live port of the ENHANCED 4H Sweep Swing
+strategy (backtest: enhanced_filterscript.py).
+
+Detection (per consecutive 4H candle pair C1, C2), entry always at C2 open.
+Unlike plain sweep_4h, C1 may be green OR red — each direction has a branch
+per C1 colour (a doji C1, open == close, never qualifies):
+
+  LONG  (C2 GREEN, C2.low sweeps C1.low → C2.low < C1.low):
+    * C1 GREEN:  C2.open >= C1.close  AND  C2.close > C1.high
+    * C1 RED:    C2.open >= C1.open   AND  C2.close > C1.high
+    Stop loss = C2 low.
+
+  SHORT (C2 RED, C2.high sweeps C1.high → C2.high > C1.high):
+    * C1 GREEN:  C2.open <= C1.open   AND  C2.close < C1.low
+    * C1 RED:    C2.open <= C1.close  AND  C2.close < C1.low
+    Stop loss = C2 high.
+
+Both directions are checked every candle (they are mutually exclusive by C2
+colour). Every valid setup fires regardless of trend alignment; the manual
+trend is only reported in the reason string.
+
+Hard gates (still block the signal):
+  * MIN_STOP: risk (entry→SL) must meet the per-coin minimum.
+  * jp-risk: net R:R after fees > ENGINE_MIN_RR; max position ≤ MAX_POS_AFTER_FEES.
+"""
+
+from __future__ import annotations
+
+import time
+
+from .base import Signal, Strategy
+from ._shared import (
+    POSITION,
+    FEE_PCT,
+    ALLOWED_RISK,
+    LEVERAGE,
+    ENGINE_MIN_RR,
+    MAX_POS_AFTER_FEES,
+    DEFAULT_TARGET_RR,
+    ONE_HOUR_MS,
+    _norm,
+    _ctx_get,
+    _norm_dir,
+    trend_state,
+    calc_jp_risk,
+    fmt_setup_candles,
+    fmt_trend,
+)
+
+FOUR_HOUR_MS = 4 * ONE_HOUR_MS
+
+# Per-coin minimum stop distance (in points) — backtest SETTINGS (4b).
+MIN_STOP_POINTS_BY_SYMBOL = {
+    "BTCUSDT": 300.0,
+    "ETHUSDT": 16.0,
+    "SOLUSDT": 0.8,
+}
+
+
+def detect_enhanced(c1, c2) -> str | None:
+    """Enhanced sweep rules on a normalized C1/C2 pair. Returns 'long'/'short'
+    or None. C1 may be green or red (doji never qualifies); C2's colour fixes
+    the direction, so at most one direction can fire."""
+    c1_green = c1["c"] > c1["o"]
+    c1_red = c1["c"] < c1["o"]
+    c2_green = c2["c"] > c2["o"]
+    c2_red = c2["c"] < c2["o"]
+
+    # LONG: C2 green and sweeps C1's low.
+    if c2_green and c2["l"] < c1["l"]:
+        if c1_green and c2["o"] >= c1["c"] and c2["c"] > c1["h"]:
+            return "long"
+        if c1_red and c2["o"] >= c1["o"] and c2["c"] > c1["h"]:
+            return "long"
+
+    # SHORT: C2 red and sweeps C1's high.
+    if c2_red and c2["h"] > c1["h"]:
+        if c1_green and c2["o"] <= c1["o"] and c2["c"] < c1["l"]:
+            return "short"
+        if c1_red and c2["o"] <= c1["c"] and c2["c"] < c1["l"]:
+            return "short"
+
+    return None
+
+
+class Sweep4HEnhancedStrategy(Strategy):
+    name = "sweep_4h_enhanced"
+    label = "4H Sweep Enhanced"
+    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    interval = "4h"
+    lookback = 6
+
+    def on_candle(self, symbol, candles, context) -> "Signal | None":
+        min_stop = MIN_STOP_POINTS_BY_SYMBOL.get(symbol)
+        if min_stop is None:
+            return None
+
+        # Normalize + sort candles oldest..newest by open time.
+        cs = sorted((_norm(c) for c in candles), key=lambda x: x["t"])
+
+        # Keep only fully-closed candles (open time + 4h must be in the past).
+        now_ms = time.time() * 1000
+        closed = [c for c in cs if c["t"] + FOUR_HOUR_MS <= now_ms]
+        if len(closed) < 2:
+            return None
+        c1, c2 = closed[-2], closed[-1]
+
+        direction = detect_enhanced(c1, c2)
+        if direction is None:
+            return None
+
+        # Dedupe: fire at most once per C2 candle, per symbol.
+        fired = getattr(self, "_fired_c2", None)
+        if fired is None:
+            fired = self._fired_c2 = {}
+        if fired.get(symbol) == c2["t"]:
+            return None
+
+        manual_trend = _norm_dir(_ctx_get(context, "trend"))
+        want = "BULLISH" if direction == "long" else "BEARISH"
+        trend_alignment = trend_state(manual_trend, want)
+
+        # Entry / stop-loss (entry always at C2 open).
+        entry = c2["o"]
+        sl = c2["l"] if direction == "long" else c2["h"]
+
+        risk = abs(entry - sl)
+
+        # Min-stop gate.
+        if risk < min_stop:
+            return None
+
+        ctx_rr = context.get("rr") if isinstance(context, dict) else getattr(context, "rr", None)
+        target_rr = float(ctx_rr) if ctx_rr is not None else DEFAULT_TARGET_RR
+
+        tp = entry + risk * target_rr if direction == "long" else entry - risk * target_rr
+
+        jp = calc_jp_risk(POSITION, direction, entry, sl, tp, LEVERAGE, FEE_PCT,
+                          ALLOWED_RISK)
+        if jp is None:
+            return None
+        net_rr = round(jp["rrAfterFees"], 3)
+        if jp["maxPositionAfterFees"] > MAX_POS_AFTER_FEES:
+            return None
+        if net_rr <= ENGINE_MIN_RR:
+            return None
+
+        # Reason: trend indicator (line 0) + C1/C2 setup-candle times below it.
+        reason = f"{fmt_trend(trend_alignment)}\n{fmt_setup_candles(c1['t'], c2['t'])}"
+
+        # Record the fired C2 and return the signal.
+        fired[symbol] = c2["t"]
+        return Signal(
+            strategy=self.name,
+            symbol=symbol,
+            side=direction,
+            entry=entry,
+            stop_loss=sl,
+            take_profit=tp,
+            reason=reason,
+        )
